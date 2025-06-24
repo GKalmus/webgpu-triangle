@@ -1,17 +1,23 @@
 const adapter = await navigator.gpu?.requestAdapter();
 const device = await adapter?.requestDevice();
-if (!device) {
-	console.error("need a browser that supports WebGPU");
-}
+if (!device) throw new Error("WebGPU not supported on this browser.");
 
-// Get a WebGPU context from the canvas and configure it
-const canvas = document.querySelector("canvas");
+const canvas = document.getElementById("gpu-canvas");
+
 const context = canvas.getContext("webgpu");
 const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+
 context.configure({
 	device,
 	format: presentationFormat,
+	alphaMode: "opaque",
 });
+
+
+async function load_file(url) {
+	const response = await fetch(url);
+	return await response.text();
+}
 
 const shader_file = await load_file("shaders/shader.wgsl");
 
@@ -25,10 +31,15 @@ const pipeline = device.createRenderPipeline({
 	layout: "auto",
 	vertex: {
 		module,
+		entryPoint: "vs",
 	},
 	fragment: {
 		module,
+		entryPoint: "fs",
 		targets: [{ format: presentationFormat }],
+	},
+	primitive: {
+		topology: "triangle-list",
 	},
 });
 
@@ -36,7 +47,7 @@ const renderPassDescriptor = {
 	label: "our basic canvas renderPass",
 	colorAttachments: [
 		{
-			// view: <- to be filled out when we render
+			view: undefined,
 			clearValue: [0.3, 0.3, 0.3, 1],
 			loadOp: "clear",
 			storeOp: "store",
@@ -47,21 +58,16 @@ const renderPassDescriptor = {
 async function render() {
 	// Get the current texture from the canvas context and
 	// set it as the texture to render to.
-	renderPassDescriptor.colorAttachments[0].view = context
-		.getCurrentTexture()
-		.createView();
+	renderPassDescriptor.colorAttachments[0].view = 
+		context.getCurrentTexture().createView();
 
-	// make a command encoder to start encoding commands
 	const encoder = device.createCommandEncoder({ label: "our encoder" });
-
-	// make a render pass encoder to encode render specific commands
 	const pass = encoder.beginRenderPass(renderPassDescriptor);
 	pass.setPipeline(pipeline);
 	pass.draw(3); // call our vertex shader 3 times.
 	pass.end();
 
-	const commandBuffer = encoder.finish();
-	device.queue.submit([commandBuffer]);
+	device.queue.submit([encoder.finish()]);
 }
 
 render();
