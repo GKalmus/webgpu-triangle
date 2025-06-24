@@ -1,12 +1,11 @@
+// Get info of GPU
 const adapter = await navigator.gpu?.requestAdapter();
 const device = await adapter?.requestDevice();
 if (!device) throw new Error("WebGPU not supported on this browser.");
 
 const canvas = document.getElementById("gpu-canvas");
-
 const context = canvas.getContext("webgpu");
 const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
-
 context.configure({
 	device,
 	format: presentationFormat,
@@ -56,15 +55,13 @@ const renderPassDescriptor = {
 };
 
 async function render() {
-	// Get the current texture from the canvas context and
-	// set it as the texture to render to.
 	renderPassDescriptor.colorAttachments[0].view = 
 		context.getCurrentTexture().createView();
 
 	const encoder = device.createCommandEncoder({ label: "our encoder" });
 	const pass = encoder.beginRenderPass(renderPassDescriptor);
 	pass.setPipeline(pipeline);
-	pass.draw(3); // call our vertex shader 3 times.
+	pass.draw(3);
 	pass.end();
 
 	device.queue.submit([encoder.finish()]);
