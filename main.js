@@ -1,17 +1,22 @@
-// Get info of GPU
-const adapter = await navigator.gpu?.requestAdapter();
-const device = await adapter?.requestDevice();
-if (!device) throw new Error("WebGPU not supported on this browser.");
+const canvas = document.querySelector("canvas");
 
-const canvas = document.getElementById("gpu-canvas");
+// WebGPU device initialization
+if (!navigator.gpu) {
+	throw new Error("WebGPU not supported on this browser.");
+}
+const adapter = await navigator.gpu.requestAdapter();
+if (!adapter) {
+	throw new Error("No appropriate GPUAdapter found");
+}
+
+const device = await adapter.requestDevice();
+
 const context = canvas.getContext("webgpu");
-const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
 context.configure({
-	device,
-	format: presentationFormat,
-	alphaMode: "opaque",
+	device: device,
+	format: canvasFormat,
 });
-
 
 async function load_file(url) {
 	const response = await fetch(url);
@@ -20,51 +25,70 @@ async function load_file(url) {
 
 const shader_file = await load_file("shaders/shader.wgsl");
 
-const module = device.createShaderModule({
-	label: "our hardcoded red triangle shaders",
-	code: shader_file,
+const vertices = new Float32Array([
+	-0.8, -0.8, 
+	0.8, -0.8,
+	0, 0.8,
+]);
+
+const vertexBuffer = device.createBuffer({
+	label: "Cell vertices",
+	size: vertices.byteLength,
+	usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
 });
 
-const pipeline = device.createRenderPipeline({
-	label: "our hardcoded red triangle pipeline",
-	layout: "auto",
-	vertex: {
-		module,
-		entryPoint: "vs",
-	},
-	fragment: {
-		module,
-		entryPoint: "fs",
-		targets: [{ format: presentationFormat }],
-	},
-	primitive: {
-		topology: "triangle-list",
-	},
-});
+device.queue.writeBuffer(vertexBuffer, 0, vertices);
 
-const renderPassDescriptor = {
-	label: "our basic canvas renderPass",
-	colorAttachments: [
+const vertexBufferLayout = {
+	arrayStride: 8,
+	attributes: [
 		{
-			view: undefined,
-			clearValue: [0.3, 0.3, 0.3, 1],
-			loadOp: "clear",
-			storeOp: "store",
+			format: "float32x2",
+			offset: 0,
+			shaderLocation: 0,
 		},
 	],
 };
 
-async function render() {
-	renderPassDescriptor.colorAttachments[0].view = 
-		context.getCurrentTexture().createView();
+const cellShaderModule = device.createShaderModule({
+	label: "our hardcoded red triangle shaders",
+	code: shader_file,
+});
 
-	const encoder = device.createCommandEncoder({ label: "our encoder" });
-	const pass = encoder.beginRenderPass(renderPassDescriptor);
-	pass.setPipeline(pipeline);
-	pass.draw(3);
-	pass.end();
+const cellPipeline = device.createRenderPipeline({
+  label: "Cell pipeline",
+  layout: "auto",
+  vertex: {
+    module: cellShaderModule,
+    entryPoint: "vertexMain",
+    buffers: [vertexBufferLayout]
+  },
+  fragment: {
+    module: cellShaderModule,
+    entryPoint: "fragmentMain",
+    targets: [{
+      format: canvasFormat
+    }]
+  }
+});
 
-	device.queue.submit([encoder.finish()]);
-}
 
-render();
+// Clear the canvas
+const encoder = device.createCommandEncoder();
+const pass = encoder.beginRenderPass({
+	colorAttachments: [
+		{
+			view: context.getCurrentTexture().createView(),
+			loadOp: "clear",
+			clearValue: { r: 0.2, g: 0.2, b: 0.2, a: 1 },
+			storeOp: "store",
+		},
+	],
+});
+pass.setPipeline(cellPipeline);
+pass.setVertexBuffer(0, vertexBuffer);
+pass.draw(vertices.length/2);
+
+pass.end();
+
+device.queue.submit([encoder.finish()]);
