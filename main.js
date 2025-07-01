@@ -23,13 +23,9 @@ async function load_file(url) {
 	return await response.text();
 }
 
-const shader_file = await load_file("shaders/shader.wgsl");
+const shader_file = await load_file("shaders/red-triangle.wgsl");
 
-const vertices = new Float32Array([
-	-0.8, -0.8, 
-	0.8, -0.8,
-	0, 0.8,
-]);
+const vertices = new Float32Array([-0.8, -0.8, 0.8, -0.8, 0, 0.8]);
 
 const vertexBuffer = device.createBuffer({
 	label: "Cell vertices",
@@ -56,22 +52,23 @@ const cellShaderModule = device.createShaderModule({
 });
 
 const cellPipeline = device.createRenderPipeline({
-  label: "Cell pipeline",
-  layout: "auto",
-  vertex: {
-    module: cellShaderModule,
-    entryPoint: "vertexMain",
-    buffers: [vertexBufferLayout]
-  },
-  fragment: {
-    module: cellShaderModule,
-    entryPoint: "fragmentMain",
-    targets: [{
-      format: canvasFormat
-    }]
-  }
+	label: "Cell pipeline",
+	layout: "auto",
+	vertex: {
+		module: cellShaderModule,
+		entryPoint: "vertexMain",
+		buffers: [vertexBufferLayout],
+	},
+	fragment: {
+		module: cellShaderModule,
+		entryPoint: "fragmentMain",
+		targets: [
+			{
+				format: canvasFormat,
+			},
+		],
+	},
 });
-
 
 // Clear the canvas
 const encoder = device.createCommandEncoder();
@@ -87,7 +84,7 @@ const pass = encoder.beginRenderPass({
 });
 pass.setPipeline(cellPipeline);
 pass.setVertexBuffer(0, vertexBuffer);
-pass.draw(vertices.length/2);
+pass.draw(vertices.length / 2);
 
 pass.end();
 
