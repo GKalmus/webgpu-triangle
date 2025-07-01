@@ -1,91 +1,192 @@
+import { load_file } from "./load-file.js";
+import { rand } from "./rand.js";
+import { createCircleVertices } from "./vertices.js";
+
+const adapter = await navigator.gpu?.requestAdapter();
+const device = await adapter?.requestDevice();
+if (!device) {
+	fail("need a browser that supports WebGPU");
+}
+
+// Get a WebGPU context from the canvas and configure it
 const canvas = document.querySelector("canvas");
-
-// WebGPU device initialization
-if (!navigator.gpu) {
-	throw new Error("WebGPU not supported on this browser.");
-}
-const adapter = await navigator.gpu.requestAdapter();
-if (!adapter) {
-	throw new Error("No appropriate GPUAdapter found");
-}
-
-const device = await adapter.requestDevice();
-
 const context = canvas.getContext("webgpu");
-const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
 context.configure({
-	device: device,
-	format: canvasFormat,
+	device,
+	format: presentationFormat,
 });
 
-async function load_file(url) {
-	const response = await fetch(url);
-	return await response.text();
-}
+const shader_file = await load_file("shaders/rgb-triangle.wgsl");
 
-const shader_file = await load_file("shaders/red-triangle.wgsl");
+const module = device.createShaderModule({
+	code: shader_file,
+});
 
-const vertices = new Float32Array([-0.8, -0.8, 0.8, -0.8, 0, 0.8]);
+const pipeline = device.createRenderPipeline({
+	label: "flat colors",
+	layout: "auto",
+	vertex: {
+		module,
+		buffers: [
+			{
+				arrayStride: 2 * 4, // 2 floats, 4 bytes each
+				attributes: [
+					{ shaderLocation: 0, offset: 0, format: "float32x2" }, // position
+				],
+			},
+			{
+				arrayStride: 6 * 4, // 6 floats, 4 bytes each
+				stepMode: "instance",
+				attributes: [
+					{ shaderLocation: 1, offset: 0, format: "float32x4" }, // color
+					{ shaderLocation: 2, offset: 16, format: "float32x2" }, // offset
+				],
+			},
+			{
+				arrayStride: 2 * 4, // 2 floats, 4 bytes each
+				stepMode: "instance",
+				attributes: [
+					{ shaderLocation: 3, offset: 0, format: "float32x2" }, // scale
+				],
+			},
+		],
+	},
+	fragment: {
+		module,
+		targets: [{ format: presentationFormat }],
+	},
+});
 
-const vertexBuffer = device.createBuffer({
-	label: "Cell vertices",
-	size: vertices.byteLength,
+const kNumObjects = 100;
+const objectInfos = [];
+
+// create 2 storage buffers
+const staticUnitSize =
+	4 * 4 + // color is 4 32bit floats (4bytes each)
+	2 * 4; // offset is 2 32bit floats (4bytes each)
+const changingUnitSize = 2 * 4; // scale is 2 32bit floats (4bytes each)
+const staticVertexBufferSize = staticUnitSize * kNumObjects;
+const changingVertexBufferSize = changingUnitSize * kNumObjects;
+
+const staticVertexBuffer = device.createBuffer({
+	label: "static vertex for objects",
+	size: staticVertexBufferSize,
 	usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
 });
 
-device.queue.writeBuffer(vertexBuffer, 0, vertices);
+const changingVertexBuffer = device.createBuffer({
+	label: "changing vertex for objects",
+	size: changingVertexBufferSize,
+	usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+});
 
-const vertexBufferLayout = {
-	arrayStride: 8,
-	attributes: [
+// offsets to the various uniform values in float32 indices
+const kColorOffset = 0;
+const kOffsetOffset = 4;
+
+const kScaleOffset = 0;
+
+{
+	const staticVertexValues = new Float32Array(staticVertexBufferSize / 4);
+	for (let i = 0; i < kNumObjects; ++i) {
+		const staticOffset = i * (staticUnitSize / 4);
+
+		// These are only set once so set them now
+		staticVertexValues.set(
+			[rand(), rand(), rand(), 1],
+			staticOffset + kColorOffset,
+		); // set the color
+		staticVertexValues.set(
+			[rand(-0.9, 0.9), rand(-0.9, 0.9)],
+			staticOffset + kOffsetOffset,
+		); // set the offset
+
+		objectInfos.push({
+			scale: rand(0.2, 0.5),
+		});
+	}
+	device.queue.writeBuffer(staticVertexBuffer, 0, staticVertexValues);
+}
+
+// a typed array we can use to update the changingStorageBuffer
+const vertexValues = new Float32Array(changingVertexBufferSize / 4);
+
+const { vertexData, numVertices } = createCircleVertices({
+	radius: 0.5,
+	innerRadius: 0.25,
+});
+const vertexBuffer = device.createBuffer({
+	label: "vertex buffer vertices",
+	size: vertexData.byteLength,
+	usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+});
+device.queue.writeBuffer(vertexBuffer, 0, vertexData);
+
+const renderPassDescriptor = {
+	label: "our basic canvas renderPass",
+	colorAttachments: [
 		{
-			format: "float32x2",
-			offset: 0,
-			shaderLocation: 0,
+			// view: <- to be filled out when we render
+			clearValue: [0.3, 0.3, 0.3, 1],
+			loadOp: "clear",
+			storeOp: "store",
 		},
 	],
 };
 
-const cellShaderModule = device.createShaderModule({
-	label: "our hardcoded red triangle shaders",
-	code: shader_file,
+function render() {
+	// Get the current texture from the canvas context and
+	// set it as the texture to render to.
+	renderPassDescriptor.colorAttachments[0].view = context
+		.getCurrentTexture()
+		.createView();
+
+	const encoder = device.createCommandEncoder();
+	const pass = encoder.beginRenderPass(renderPassDescriptor);
+	pass.setPipeline(pipeline);
+	pass.setVertexBuffer(0, vertexBuffer);
+	pass.setVertexBuffer(1, staticVertexBuffer);
+	pass.setVertexBuffer(2, changingVertexBuffer);
+
+	// Set the uniform values in our JavaScript side Float32Array
+	const aspect = canvas.width / canvas.height;
+
+	// set the scales for each object
+	objectInfos.forEach(({ scale }, ndx) => {
+		const offset = ndx * (changingUnitSize / 4);
+		vertexValues.set([scale / aspect, scale], offset + kScaleOffset); // set the scale
+	});
+	// upload all scales at once
+	device.queue.writeBuffer(changingVertexBuffer, 0, vertexValues);
+
+	pass.draw(numVertices, kNumObjects);
+
+	pass.end();
+
+	const commandBuffer = encoder.finish();
+	device.queue.submit([commandBuffer]);
+}
+
+const observer = new ResizeObserver((entries) => {
+	for (const entry of entries) {
+		const canvas = entry.target;
+		const width = entry.contentBoxSize[0].inlineSize;
+		const height = entry.contentBoxSize[0].blockSize;
+		canvas.width = Math.max(
+			1,
+			Math.min(width, device.limits.maxTextureDimension2D),
+		);
+		canvas.height = Math.max(
+			1,
+			Math.min(height, device.limits.maxTextureDimension2D),
+		);
+		// re-render
+		render();
+	}
 });
+observer.observe(canvas);
 
-const cellPipeline = device.createRenderPipeline({
-	label: "Cell pipeline",
-	layout: "auto",
-	vertex: {
-		module: cellShaderModule,
-		entryPoint: "vertexMain",
-		buffers: [vertexBufferLayout],
-	},
-	fragment: {
-		module: cellShaderModule,
-		entryPoint: "fragmentMain",
-		targets: [
-			{
-				format: canvasFormat,
-			},
-		],
-	},
-});
-
-// Clear the canvas
-const encoder = device.createCommandEncoder();
-const pass = encoder.beginRenderPass({
-	colorAttachments: [
-		{
-			view: context.getCurrentTexture().createView(),
-			loadOp: "clear",
-			clearValue: { r: 0.2, g: 0.2, b: 0.2, a: 1 },
-			storeOp: "store",
-		},
-	],
-});
-pass.setPipeline(cellPipeline);
-pass.setVertexBuffer(0, vertexBuffer);
-pass.draw(vertices.length / 2);
-
-pass.end();
-
-device.queue.submit([encoder.finish()]);
+function fail(msg) {
+	alert(msg);
+}
