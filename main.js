@@ -30,17 +30,18 @@ const pipeline = device.createRenderPipeline({
 		module,
 		buffers: [
 			{
-				arrayStride: 2 * 4, // 2 floats, 4 bytes each
+				arrayStride: 2 * 4 + 4, // 2 floats, 4 bytes each + 4 bytes
 				attributes: [
 					{ shaderLocation: 0, offset: 0, format: "float32x2" }, // position
+					{ shaderLocation: 4, offset: 8, format: "unorm8x4" }, // perVertexColor
 				],
 			},
 			{
-				arrayStride: 6 * 4, // 6 floats, 4 bytes each
+				arrayStride: 4 + 2 * 4, // 6 floats, 4 bytes each
 				stepMode: "instance",
 				attributes: [
-					{ shaderLocation: 1, offset: 0, format: "float32x4" }, // color
-					{ shaderLocation: 2, offset: 16, format: "float32x2" }, // offset
+					{ shaderLocation: 1, offset: 0, format: "unorm8x4" }, // color
+					{ shaderLocation: 2, offset: 4, format: "float32x2" }, // offset
 				],
 			},
 			{
@@ -63,9 +64,11 @@ const objectInfos = [];
 
 // create 2 storage buffers
 const staticUnitSize =
-	4 * 4 + // color is 4 32bit floats (4bytes each)
+	4 + // color is 4 bytes
 	2 * 4; // offset is 2 32bit floats (4bytes each)
+
 const changingUnitSize = 2 * 4; // scale is 2 32bit floats (4bytes each)
+
 const staticVertexBufferSize = staticUnitSize * kNumObjects;
 const changingVertexBufferSize = changingUnitSize * kNumObjects;
 
@@ -83,36 +86,40 @@ const changingVertexBuffer = device.createBuffer({
 
 // offsets to the various uniform values in float32 indices
 const kColorOffset = 0;
-const kOffsetOffset = 4;
+const kOffsetOffset = 1;
 
 const kScaleOffset = 0;
 
 {
-	const staticVertexValues = new Float32Array(staticVertexBufferSize / 4);
+	const staticVertexValuesU8 = new Uint8Array(staticVertexBufferSize);
+	const staticVertexValuesF32 = new Float32Array(staticVertexValuesU8.buffer);
+
 	for (let i = 0; i < kNumObjects; ++i) {
-		const staticOffset = i * (staticUnitSize / 4);
+		const staticOffsetU8 = i * staticUnitSize;
+		const staticOffsetF32 = staticOffsetU8 / 4;
 
-		// These are only set once so set them now
-		staticVertexValues.set(
-			[rand(), rand(), rand(), 1],
-			staticOffset + kColorOffset,
-		); // set the color
-		staticVertexValues.set(
+		staticVertexValuesU8.set(
+			// set the color
+			[rand() * 255, rand() * 255, rand() * 255, 255],
+			staticOffsetU8 + kColorOffset,
+		);
+
+		staticVertexValuesF32.set(
+			// set the offset
 			[rand(-0.9, 0.9), rand(-0.9, 0.9)],
-			staticOffset + kOffsetOffset,
-		); // set the offset
-
+			staticOffsetF32 + kOffsetOffset,
+		);
 		objectInfos.push({
 			scale: rand(0.2, 0.5),
 		});
 	}
-	device.queue.writeBuffer(staticVertexBuffer, 0, staticVertexValues);
+	device.queue.writeBuffer(staticVertexBuffer, 0, staticVertexValuesF32);
 }
 
 // a typed array we can use to update the changingStorageBuffer
 const vertexValues = new Float32Array(changingVertexBufferSize / 4);
 
-const { vertexData, numVertices } = createCircleVertices({
+const { vertexData, indexData, numVertices } = createCircleVertices({
 	radius: 0.5,
 	innerRadius: 0.25,
 });
@@ -122,6 +129,13 @@ const vertexBuffer = device.createBuffer({
 	usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
 });
 device.queue.writeBuffer(vertexBuffer, 0, vertexData);
+
+const indexBuffer = device.createBuffer({
+	label: "index buffer",
+	size: indexData.byteLength,
+	usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+});
+device.queue.writeBuffer(indexBuffer, 0, indexData);
 
 const renderPassDescriptor = {
 	label: "our basic canvas renderPass",
@@ -148,6 +162,7 @@ function render() {
 	pass.setVertexBuffer(0, vertexBuffer);
 	pass.setVertexBuffer(1, staticVertexBuffer);
 	pass.setVertexBuffer(2, changingVertexBuffer);
+	pass.setIndexBuffer(indexBuffer, "uint32");
 
 	// Set the uniform values in our JavaScript side Float32Array
 	const aspect = canvas.width / canvas.height;
@@ -160,7 +175,7 @@ function render() {
 	// upload all scales at once
 	device.queue.writeBuffer(changingVertexBuffer, 0, vertexValues);
 
-	pass.draw(numVertices, kNumObjects);
+	pass.drawIndexed(numVertices, kNumObjects);
 
 	pass.end();
 
